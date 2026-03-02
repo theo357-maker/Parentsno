@@ -1,0 +1,12 @@
+{
+  "version": "2.0.0",
+  "build": 20240301,
+  "mandatory": false,
+  "releaseNotes": [
+    "Ajout des notifications en temps réel",
+    "Mode hors ligne amélioré",
+    "Correction des bugs de synchronisation",
+    "Nouvelle interface pour les devoirs maternelle"
+  ],
+  "updateUrl": "/index.html"
+}
