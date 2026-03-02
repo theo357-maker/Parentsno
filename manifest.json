@@ -1,6 +1,6 @@
 {
   "name": "CS la Colombe - Espace Parent",
-  "short_name": "CS Parent",
+  "short_name": "hybri Parent",
   "description": "Suivez la scolarité de vos enfants en temps réel",
   "start_url": "index.html",
   "display": "standalone",
@@ -10,7 +10,7 @@
   "scope": "/",
   "icons": [
     {
-      "src": "iconicon-72x72.png",
+      "src": "icon-72x72.png",
       "sizes": "72x72",
       "type": "image/png",
       "purpose": "any maskable"
