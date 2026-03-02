@@ -1252,6 +1252,11 @@
                 <div class="form-group">
                     <input type="password" id="login-password" class="form-control" placeholder="Mot de passe" required>
                 </div>
+<!-- Ajouter après le champ mot de passe -->
+<div class="form-group" style="display: flex; align-items: center; gap: 0.5rem;">
+    <input type="checkbox" id="remember-me" checked style="width: auto;">
+    <label for="remember-me" style="margin-bottom: 0;">Se souvenir de moi</label>
+</div>
                 <button type="submit" class="btn btn-primary" style="width: 100%;">
                     <i class="fas fa-sign-in-alt"></i> Connexion
                 </button>
@@ -2372,15 +2377,35 @@
     }
 
     function showLocalNotification(title, body, data = {}) {
-        if (Notification.permission === 'granted') {
+    if (Notification.permission === 'granted') {
+        // Créer une clé unique pour cette notification
+        const notifKey = `shown_${data.type}_${data.childId}_${data.timestamp || Date.now()}`;
+        
+        // Vérifier si cette notification a déjà été affichée récemment
+        const shown = JSON.parse(localStorage.getItem('shown_notifications') || '{}');
+        
+        // Nettoyer les anciennes entrées (plus de 1 heure)
+        const oneHourAgo = Date.now() - (60 * 60 * 1000);
+        Object.keys(shown).forEach(key => {
+            if (shown[key] < oneHourAgo) delete shown[key];
+        });
+        
+        // Si la notification n'a pas été affichée récemment
+        if (!shown[notifKey]) {
             const notification = new Notification(title, {
                 body: body,
                 icon: 'icon-192x192.png',
                 badge: 'icon-72x72.png',
                 data: data,
                 requireInteraction: true,
-                vibrate: [200, 100, 200]
+                vibrate: [200, 100, 200],
+                tag: notifKey, // Utiliser le tag pour éviter les doublons
+                renotify: false // Ne pas notifier à nouveau pour la même tag
             });
+            
+            // Marquer comme affichée
+            shown[notifKey] = Date.now();
+            localStorage.setItem('shown_notifications', JSON.stringify(shown));
             
             notification.onclick = function() {
                 window.focus();
@@ -2388,36 +2413,23 @@
                 if (data.page) {
                     const link = document.querySelector(`.nav-menu a[data-page="${data.page}"]`);
                     if (link) link.click();
+                    
+                    // Si un enfant est spécifié, le sélectionner
+                    if (data.childId) {
+                        setTimeout(() => {
+                            const selector = document.getElementById(`${data.page}-child-selector`) ||
+                                           document.getElementById('child-selector');
+                            if (selector) {
+                                selector.value = data.childId;
+                                selector.dispatchEvent(new Event('change'));
+                            }
+                        }, 500);
+                    }
                 }
             };
-            
-            updateNotificationCount(1);
-            
-            const notifObj = {
-                id: `notif_${Date.now()}`,
-                title, body, data,
-                type: data.type || 'general',
-                timestamp: new Date().toISOString(),
-                read: false
-            };
-            notifications.unshift(notifObj);
-            saveNotificationsToStorage();
         }
     }
-
-    function updateNotificationCount(change = 0) {
-        const countEl = document.getElementById('notification-count');
-        let current = parseInt(countEl.textContent) || 0;
-        current += change;
-        if (current < 0) current = 0;
-        
-        countEl.textContent = current > 99 ? '99+' : current;
-        countEl.classList.toggle('hidden', current === 0);
-        
-        if ('setAppBadge' in navigator && current > 0) {
-            navigator.setAppBadge(current).catch(console.error);
-        }
-    }
+}
 
     function updateNotificationBadge(page, count) {
         const navItem = document.querySelector(`.nav-menu li a[data-page="${page}"]`);
@@ -2530,31 +2542,253 @@
     };
 
     window.deleteNotification = function(id) {
-        const index = notifications.findIndex(n => n.id === id);
-        if (index !== -1) {
-            const wasUnread = !notifications[index].read;
-            notifications.splice(index, 1);
-            if (wasUnread) updateNotificationCount(-1);
-            saveNotificationsToStorage();
-            displayNotifications(document.getElementById('notification-filter').value);
-            showToast('Notification supprimée', 'success');
-        }
-    };
+    const index = notifications.findIndex(n => n.id === id);
+    if (index !== -1) {
+        const wasUnread = !notifications[index].read;
+        
+        // Supprimer de la liste
+        notifications.splice(index, 1);
+        
+        // Supprimer définitivement du localStorage
+        const stored = JSON.parse(localStorage.getItem('notifications') || '[]');
+        const newStored = stored.filter(n => n.id !== id);
+        localStorage.setItem('notifications', JSON.stringify(newStored));
+        
+        if (wasUnread) updateNotificationCount(-1);
+        
+        // Recharger l'affichage
+        displayNotifications(document.getElementById('notification-filter').value);
+        showToast('Notification supprimée définitivement', 'success');
+    }
+};
 
-    function clearAllNotifications() {
-        if (notifications.length === 0) {
-            showToast('Aucune notification', 'info');
+// Version corrigée de clearAllNotifications
+window.clearAllNotifications = function() {
+    if (notifications.length === 0) {
+        showToast('Aucune notification', 'info');
+        return;
+    }
+    
+    if (confirm('Effacer définitivement toutes les notifications ?')) {
+        const unread = notifications.filter(n => !n.read).length;
+        
+        // Vider les tableaux
+        notifications = [];
+        
+        // Supprimer définitivement du localStorage
+        localStorage.removeItem('notifications');
+        localStorage.removeItem('sent_notifications');
+        localStorage.removeItem('shown_notifications');
+        
+        updateNotificationCount(-unread);
+        displayNotifications(document.getElementById('notification-filter').value);
+        showToast('Toutes les notifications ont été effacées définitivement', 'success');
+    }
+};
+// ============================================
+// GESTION DE LA SESSION PERSISTANTE
+// ============================================
+
+// Sauvegarder la session utilisateur
+function saveUserSession(parentData) {
+    const sessionData = {
+        matricule: parentData.matricule,
+        fullName: parentData.fullName,
+        email: parentData.email,
+        phone: parentData.phone,
+        photoURL: parentData.photoURL,
+        children: parentData.children,
+        lastLogin: new Date().toISOString(),
+        // Ne pas sauvegarder le mot de passe !
+    };
+    
+    localStorage.setItem('user_session', JSON.stringify(sessionData));
+    localStorage.setItem('session_active', 'true');
+    
+    // Sauvegarder aussi en IndexedDB pour plus de sécurité
+    saveSessionToIndexedDB(sessionData);
+}
+
+// Charger la session utilisateur
+async function loadUserSession() {
+    const sessionActive = localStorage.getItem('session_active') === 'true';
+    
+    if (!sessionActive) return null;
+    
+    try {
+        // Essayer de charger depuis localStorage d'abord
+        const sessionStr = localStorage.getItem('user_session');
+        if (sessionStr) {
+            const session = JSON.parse(sessionStr);
+            
+            // Vérifier si la session n'est pas trop vieille (30 jours max)
+            const lastLogin = new Date(session.lastLogin);
+            const daysSinceLogin = (new Date() - lastLogin) / (1000 * 60 * 60 * 24);
+            
+            if (daysSinceLogin <= 30) {
+                return session;
+            }
+        }
+        
+        // Sinon essayer IndexedDB
+        return await loadSessionFromIndexedDB();
+        
+    } catch (error) {
+        console.error('Erreur chargement session:', error);
+        return null;
+    }
+}
+
+// Sauvegarder en IndexedDB
+async function saveSessionToIndexedDB(sessionData) {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open('CSParentSessionDB', 1);
+        
+        request.onupgradeneeded = event => {
+            const db = event.target.result;
+            if (!db.objectStoreNames.contains('session')) {
+                db.createObjectStore('session', { keyPath: 'id' });
+            }
+        };
+        
+        request.onsuccess = event => {
+            const db = event.target.result;
+            const tx = db.transaction('session', 'readwrite');
+            const store = tx.objectStore('session');
+            store.put({ id: 'current', ...sessionData });
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+        };
+        
+        request.onerror = () => reject(request.error);
+    });
+}
+
+// Charger depuis IndexedDB
+async function loadSessionFromIndexedDB() {
+    return new Promise((resolve) => {
+        const request = indexedDB.open('CSParentSessionDB', 1);
+        
+        request.onsuccess = event => {
+            const db = event.target.result;
+            const tx = db.transaction('session', 'readonly');
+            const store = tx.objectStore('session');
+            const getRequest = store.get('current');
+            
+            getRequest.onsuccess = () => {
+                resolve(getRequest.result || null);
+            };
+            
+            getRequest.onerror = () => resolve(null);
+        };
+        
+        request.onerror = () => resolve(null);
+    });
+}
+
+// Effacer la session
+function clearUserSession() {
+    localStorage.removeItem('user_session');
+    localStorage.removeItem('session_active');
+    localStorage.removeItem('sent_notifications');
+    localStorage.removeItem('shown_notifications');
+    
+    // Effacer IndexedDB
+    const request = indexedDB.deleteDatabase('CSParentSessionDB');
+}
+
+// Modifier la fonction de connexion
+document.getElementById('login-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const matricule = document.getElementById('login-matricule').value;
+    const password = document.getElementById('login-password').value;
+    const rememberMe = document.getElementById('remember-me')?.checked || true;
+    
+    const btn = e.target.querySelector('button[type="submit"]');
+    const original = btn.innerHTML;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Connexion...';
+    btn.disabled = true;
+
+    try {
+        const parentDoc = await getDoc(doc(db, 'parents', matricule));
+        if (!parentDoc.exists()) {
+            showAlert("Matricule incorrect", "error");
             return;
         }
-        if (confirm('Effacer toutes les notifications ?')) {
-            const unread = notifications.filter(n => !n.read).length;
-            notifications = [];
-            updateNotificationCount(-unread);
-            saveNotificationsToStorage();
-            displayNotifications(document.getElementById('notification-filter').value);
-            showToast('Notifications effacées', 'success');
+        
+        const parentData = parentDoc.data();
+        await signInWithEmailAndPassword(auth, parentData.authEmail, password);
+        
+        // Sauvegarder la session si "Se souvenir de moi" est coché
+        if (rememberMe) {
+            saveUserSession(parentData);
+        }
+        
+    } catch (error) {
+        console.error("Erreur connexion:", error);
+        showAlert("Matricule ou mot de passe incorrect", "error");
+    } finally {
+        btn.innerHTML = original;
+        btn.disabled = false;
+    }
+});
+
+// Modifier la fonction de déconnexion
+document.getElementById('logout-btn').addEventListener('click', () => {
+    signOut(auth);
+    clearUserSession();
+    showToast("Déconnexion réussie", "success");
+    
+    // Cacher l'application et afficher le formulaire de connexion
+    document.getElementById('app-root').classList.add('hidden');
+    document.getElementById('login-overlay').classList.remove('hidden');
+});
+
+// Vérifier la session au démarrage
+async function checkExistingSession() {
+    const session = await loadUserSession();
+    
+    if (session) {
+        try {
+            // Vérifier si le compte existe toujours
+            const parentDoc = await getDoc(doc(db, 'parents', session.matricule));
+            
+            if (parentDoc.exists()) {
+                // Tenter une reconnexion automatique (nécessite que le token soit valide)
+                console.log('Session trouvée, tentative de reconnexion automatique...');
+                
+                // Mettre à jour currentParent avec les données de la session
+                currentParent = session;
+                
+                // Cacher l'écran de connexion et afficher l'application
+                document.getElementById('login-overlay').classList.add('hidden');
+                document.getElementById('app-root').classList.remove('hidden');
+                document.getElementById('parent-name').textContent = session.fullName;
+                
+                // Mettre à jour l'affichage
+                if (session.photoURL) {
+                    document.getElementById('parent-photo-container').innerHTML = 
+                        `<img src="${session.photoURL}" class="parent-photo" alt="Photo">`;
+                }
+                
+                // Charger les données
+                await loadParentData();
+                loadNotificationsFromStorage();
+                setupRealTimeNotifications();
+                
+                return true;
+            }
+        } catch (error) {
+            console.error('Erreur reconnexion automatique:', error);
+            clearUserSession();
         }
     }
+    
+    return false;
+}
+
+// Ajouter une case "Se souvenir de moi" dans le formulaire de connexion
+// Ajoutez ceci dans le formulaire de connexion (#login-card)
 
     // ============================================
     // GÉNÉRATION MATRICULE PARENT
@@ -2576,158 +2810,562 @@
             return 'P' + Math.floor(Math.random() * 900 + 100).toString();
         }
     }
+// ============================================
+// AUTHENTIFICATION BIOMÉTRIQUE (Face ID / Touch ID)
+// ============================================
 
-    // ============================================
-    // AUTHENTIFICATION
-    // ============================================
-    onAuthStateChanged(auth, async (user) => {
-        if (user) {
-            const q = query(collection(db, 'parents'), where('uid', '==', user.uid));
-            const snap = await getDocs(q);
-            if (!snap.empty) {
-                currentParent = { id: snap.docs[0].id, ...snap.docs[0].data() };
-                
-                document.getElementById('login-overlay').classList.add('hidden');
-                document.getElementById('app-root').classList.remove('hidden');
-                document.getElementById('parent-name').textContent = currentParent.fullName;
-                
-                const photoContainer = document.getElementById('parent-photo-container');
-                if (currentParent.photoURL) {
-                    photoContainer.innerHTML = `<img src="${currentParent.photoURL}" class="parent-photo" alt="Photo">`;
-                    document.getElementById('profile-photo-preview').innerHTML = `<img src="${currentParent.photoURL}" class="photo-preview">`;
-                } else {
-                    photoContainer.innerHTML = `<div class="parent-photo-placeholder"><i class="fas fa-user"></i></div>`;
-                }
-                
-                loadNotificationsFromStorage();
-                await loadParentData();
-                setupRealTimeNotifications();
-                
-                if (currentParent.notificationEnabled) {
-                    setupFirebaseMessaging();
-                }
-            } else {
-                await signOut(auth);
-                showAlert("Accès refusé", "error");
-            }
-        } else {
-            document.getElementById('login-overlay').classList.remove('hidden');
-            document.getElementById('app-root').classList.add('hidden');
-        }
-    });
-
-    // ============================================
-    // NOTIFICATIONS TEMPS RÉEL
-    // ============================================
-    function setupRealTimeNotifications() {
-        if (!currentParent || childrenList.length === 0) return;
+async function checkBiometricSupport() {
+    // Vérifier si l'API WebAuthn est supportée
+    if (!window.PublicKeyCredential) {
+        return { supported: false, reason: 'WebAuthn non supporté' };
+    }
+    
+    try {
+        // Vérifier si la plateforme a un capteur biométrique
+        const available = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
         
-        const read = JSON.parse(localStorage.getItem('parent_read') || '{}');
-        const lastRead = {
-            grades: new Date(read.grades || 0),
-            incidents: new Date(read['presence-incidents'] || 0),
-            homework: new Date(read.homework || 0)
+        if (available) {
+            return { supported: true, type: 'platform' };
+        } else {
+            // Vérifier si des clés de sécurité externes sont disponibles
+            const conditional = await PublicKeyCredential.isConditionalMediationAvailable();
+            return { 
+                supported: conditional, 
+                type: conditional ? 'conditional' : 'none'
+            };
+        }
+    } catch (error) {
+        console.error('Erreur vérification biométrie:', error);
+        return { supported: false, reason: error.message };
+    }
+}
+
+// Demander l'autorisation d'utiliser la biométrie
+async function requestBiometricAuth() {
+    const support = await checkBiometricSupport();
+    
+    if (!support.supported) {
+        showToast('Face ID / Touch ID non disponible sur cet appareil', 'warning');
+        return false;
+    }
+    
+    try {
+        // Créer un challenge aléatoire
+        const challenge = new Uint8Array(32);
+        window.crypto.getRandomValues(challenge);
+        
+        // Options pour la création de la clé
+        const publicKeyCredentialCreationOptions = {
+            challenge: challenge,
+            rp: {
+                name: "CS la Colombe",
+                id: window.location.hostname
+            },
+            user: {
+                id: new Uint8Array(16),
+                name: currentParent?.email || 'parent@cslacolombe.edu',
+                displayName: currentParent?.fullName || 'Parent'
+            },
+            pubKeyCredParams: [
+                { type: "public-key", alg: -7 }, // ES256
+                { type: "public-key", alg: -257 } // RS256
+            ],
+            authenticatorSelection: {
+                authenticatorAttachment: "platform",
+                userVerification: "required",
+                residentKey: "required"
+            },
+            timeout: 60000,
+            attestation: "none"
         };
         
-        childrenList.forEach(child => {
-            if (child.type === 'secondary') {
-                // Écouter les notes
-                const gradesQuery = query(
-                    collection(db, 'published_grades'),
-                    where('className', '==', child.class)
-                );
-                
-                onSnapshot(gradesQuery, (snapshot) => {
-                    snapshot.docChanges().forEach(change => {
-                        if (change.type === 'added') {
-                            const grade = change.doc.data();
-                            const published = grade.publishedAt?.toDate() || new Date();
-                            
-                            if (grade.grades?.some(g => g.studentMatricule === child.matricule) && 
-                                published > lastRead.grades) {
-                                
-                                const notif = {
-                                    id: `grade_${change.doc.id}_${child.matricule}_${Date.now()}`,
-                                    title: '📊 Nouvelle note',
-                                    body: `${child.fullName} a une note en ${grade.subject}`,
-                                    type: 'grades',
-                                    data: { page: 'grades', childId: child.matricule, childName: child.fullName },
-                                    timestamp: published.toISOString(),
-                                    read: false
-                                };
-                                notifications.unshift(notif);
-                                updateNotificationCount(1);
-                                showLocalNotification(notif.title, notif.body, notif.data);
-                                saveNotificationsToStorage();
-                            }
-                        }
-                    });
-                });
-                
-                // Écouter les devoirs
-                const homeworkQuery = query(
-                    collection(db, 'homework'),
-                    where('className', '==', child.class)
-                );
-                
-                onSnapshot(homeworkQuery, (snapshot) => {
-                    snapshot.docChanges().forEach(change => {
-                        if (change.type === 'added') {
-                            const hw = change.doc.data();
-                            const created = hw.createdAt?.toDate() || new Date();
-                            
-                            if (created > lastRead.homework) {
-                                const notif = {
-                                    id: `hw_${change.doc.id}_${child.matricule}_${Date.now()}`,
-                                    title: '📚 Nouveau devoir',
-                                    body: `${child.fullName}: ${hw.subject} - ${hw.title}`,
-                                    type: 'homework',
-                                    data: { page: 'homework', childId: child.matricule, childName: child.fullName },
-                                    timestamp: created.toISOString(),
-                                    read: false
-                                };
-                                notifications.unshift(notif);
-                                updateNotificationCount(1);
-                                showLocalNotification(notif.title, notif.body, notif.data);
-                                saveNotificationsToStorage();
-                            }
-                        }
-                    });
-                });
+        // Créer la clé
+        const credential = await navigator.credentials.create({
+            publicKey: publicKeyCredentialCreationOptions
+        });
+        
+        if (credential) {
+            // Sauvegarder que la biométrie est activée
+            localStorage.setItem('biometric_enabled', 'true');
+            localStorage.setItem('biometric_credential_id', credential.id);
+            
+            showToast('✅ Face ID / Touch ID activé avec succès', 'success');
+            return true;
+        }
+        
+    } catch (error) {
+        console.error('Erreur activation biométrie:', error);
+        showToast('❌ Échec de l\'activation biométrique', 'error');
+        return false;
+    }
+}
+
+// Authentification biométrique
+async function authenticateWithBiometric() {
+    if (!localStorage.getItem('biometric_enabled')) {
+        return false;
+    }
+    
+    const credentialId = localStorage.getItem('biometric_credential_id');
+    
+    try {
+        const challenge = new Uint8Array(32);
+        window.crypto.getRandomValues(challenge);
+        
+        const publicKeyCredentialRequestOptions = {
+            challenge: challenge,
+            timeout: 60000,
+            rpId: window.location.hostname,
+            allowCredentials: [{
+                id: Uint8Array.from(atob(credentialId), c => c.charCodeAt(0)),
+                type: 'public-key',
+                transports: ['internal']
+            }],
+            userVerification: 'required'
+        };
+        
+        const assertion = await navigator.credentials.get({
+            publicKey: publicKeyCredentialRequestOptions
+        });
+        
+        if (assertion) {
+            // Authentification réussie
+            return true;
+        }
+        
+    } catch (error) {
+        console.error('Erreur authentification biométrique:', error);
+        return false;
+    }
+}
+
+// Bouton pour activer la biométrie dans la page de profil
+document.getElementById('enable-biometric-btn')?.addEventListener('click', async () => {
+    const enabled = await requestBiometricAuth();
+    if (enabled) {
+        document.getElementById('biometric-status').innerHTML = 
+            '<span style="color: var(--success);">✅ Face ID / Touch ID activé</span>';
+    }
+});
+
+// Vérifier si on peut utiliser la biométrie à la connexion
+async function tryBiometricLogin() {
+    if (!localStorage.getItem('biometric_enabled')) return false;
+    
+    const authenticated = await authenticateWithBiometric();
+    
+    if (authenticated) {
+        // Récupérer la session sauvegardée
+        const session = await loadUserSession();
+        if (session) {
+            currentParent = session;
+            
+            // Cacher le formulaire et afficher l'application
+            document.getElementById('login-overlay').classList.add('hidden');
+            document.getElementById('app-root').classList.remove('hidden');
+            
+            // Mettre à jour l'interface
+            document.getElementById('parent-name').textContent = session.fullName;
+            if (session.photoURL) {
+                document.getElementById('parent-photo-container').innerHTML = 
+                    `<img src="${session.photoURL}" class="parent-photo">`;
             }
             
-            // Écouter les incidents (tous types)
-            const incidentsQuery = query(
-                collection(db, 'incidents'),
-                where('studentMatricule', '==', child.matricule)
+            await loadParentData();
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+
+    // Dans sw.js, ajoutez cette fonction pour nettoyer les notifications en double
+async function cleanupDuplicateNotifications() {
+    const cache = await caches.open('notifications-cache');
+    const keys = await cache.keys();
+    
+    const seen = new Set();
+    
+    for (const request of keys) {
+        const url = new URL(request.url);
+        const notifKey = url.searchParams.get('key');
+        
+        if (notifKey) {
+            if (seen.has(notifKey)) {
+                await cache.delete(request);
+            } else {
+                seen.add(notifKey);
+            }
+        }
+    }
+}
+
+
+
+    // ============================================
+// NOTIFICATIONS TEMPS RÉEL (VERSION CORRIGÉE)
+// ============================================
+function setupRealTimeNotifications() {
+    if (!currentParent || childrenList.length === 0) return;
+    
+    const read = JSON.parse(localStorage.getItem('parent_read') || '{}');
+    const lastRead = {
+        grades: new Date(read.grades || 0),
+        incidents: new Date(read['presence-incidents'] || 0),
+        homework: new Date(read.homework || 0),
+        presence: new Date(read['presence-incidents'] || 0), // Pour les présences
+        communiques: new Date(read.communiques || 0),
+        payments: new Date(read.payments || 0),
+        timetable: new Date(read.timetable || 0)
+    };
+    
+    childrenList.forEach(child => {
+        // === NOTIFICATIONS POUR LES INCIDENTS (déjà existant) ===
+        const incidentsQuery = query(
+            collection(db, 'incidents'),
+            where('studentMatricule', '==', child.matricule)
+        );
+        
+        onSnapshot(incidentsQuery, (snapshot) => {
+            snapshot.docChanges().forEach(change => {
+                if (change.type === 'added') {
+                    const inc = change.doc.data();
+                    const created = inc.createdAt?.toDate() || new Date();
+                    
+                    // Vérifier si la notification a déjà été envoyée
+                    const notifKey = `inc_${change.doc.id}_${child.matricule}`;
+                    if (!hasNotificationBeenSent(notifKey) && created > lastRead.incidents) {
+                        markNotificationAsSent(notifKey);
+                        
+                        const notif = {
+                            id: `inc_${change.doc.id}_${child.matricule}_${Date.now()}`,
+                            title: '⚠️ Nouvel incident',
+                            body: `${child.fullName}: ${inc.type} - ${inc.description?.substring(0, 50)}...`,
+                            type: 'incidents',
+                            data: { 
+                                page: 'presence-incidents', 
+                                childId: child.matricule, 
+                                childName: child.fullName,
+                                incidentId: change.doc.id
+                            },
+                            timestamp: created.toISOString(),
+                            read: false
+                        };
+                        addNotification(notif);
+                    }
+                }
+            });
+        });
+
+        // === NOUVEAU : NOTIFICATIONS POUR LES PRÉSENCES ===
+        const presenceQuery = query(
+            collection(db, 'student_attendance'),
+            where('studentId', '==', child.matricule),
+            where('published', '==', true),
+            orderBy('date', 'desc'),
+            limit(10)
+        );
+        
+        onSnapshot(presenceQuery, (snapshot) => {
+            snapshot.docChanges().forEach(change => {
+                if (change.type === 'added') {
+                    const presence = change.doc.data();
+                    const presenceDate = presence.date || new Date().toISOString().split('T')[0];
+                    
+                    const notifKey = `presence_${change.doc.id}_${child.matricule}`;
+                    if (!hasNotificationBeenSent(notifKey)) {
+                        markNotificationAsSent(notifKey);
+                        
+                        let statusText = '';
+                        let statusIcon = '';
+                        switch(presence.status) {
+                            case 'present': 
+                                statusText = 'présent(e)'; 
+                                statusIcon = '✅';
+                                break;
+                            case 'absent': 
+                                statusText = 'absent(e)'; 
+                                statusIcon = '❌';
+                                break;
+                            case 'late': 
+                                statusText = 'en retard'; 
+                                statusIcon = '⏰';
+                                break;
+                        }
+                        
+                        const notif = {
+                            id: `presence_${change.doc.id}_${child.matricule}_${Date.now()}`,
+                            title: `${statusIcon} Présence enregistrée`,
+                            body: `${child.fullName} est ${statusText} le ${formatDate(presenceDate)}`,
+                            type: 'presence',
+                            data: { 
+                                page: 'presence-incidents', 
+                                childId: child.matricule, 
+                                childName: child.fullName,
+                                presenceId: change.doc.id,
+                                date: presenceDate,
+                                status: presence.status
+                            },
+                            timestamp: new Date().toISOString(),
+                            read: false
+                        };
+                        addNotification(notif);
+                    }
+                }
+            });
+        });
+
+        // === NOUVEAU : NOTIFICATIONS POUR LES DEVOIRS (Secondaire) ===
+        if (child.type === 'secondary') {
+            const homeworkQuery = query(
+                collection(db, 'homework'),
+                where('className', '==', child.class),
+                orderBy('createdAt', 'desc'),
+                limit(10)
             );
             
-            onSnapshot(incidentsQuery, (snapshot) => {
+            onSnapshot(homeworkQuery, (snapshot) => {
                 snapshot.docChanges().forEach(change => {
                     if (change.type === 'added') {
-                        const inc = change.doc.data();
-                        const created = inc.createdAt?.toDate() || new Date();
+                        const hw = change.doc.data();
+                        const created = hw.createdAt?.toDate() || new Date();
                         
-                        if (created > lastRead.incidents) {
+                        const notifKey = `homework_${change.doc.id}_${child.matricule}`;
+                        if (!hasNotificationBeenSent(notifKey) && created > lastRead.homework) {
+                            markNotificationAsSent(notifKey);
+                            
+                            const dueDate = hw.dueDate?.toDate() || new Date();
+                            const daysLeft = Math.ceil((dueDate - new Date()) / (1000 * 60 * 60 * 24));
+                            
                             const notif = {
-                                id: `inc_${change.doc.id}_${child.matricule}_${Date.now()}`,
-                                title: '⚠️ Nouvel incident',
-                                body: `${child.fullName}: ${inc.type}`,
-                                type: 'incidents',
-                                data: { page: 'presence-incidents', childId: child.matricule, childName: child.fullName },
+                                id: `homework_${change.doc.id}_${child.matricule}_${Date.now()}`,
+                                title: '📚 Nouveau devoir',
+                                body: `${child.fullName}: ${hw.subject} - ${hw.title} (à rendre dans ${daysLeft} jour${daysLeft > 1 ? 's' : ''})`,
+                                type: 'homework',
+                                data: { 
+                                    page: 'homework', 
+                                    childId: child.matricule, 
+                                    childName: child.fullName,
+                                    homeworkId: change.doc.id,
+                                    subject: hw.subject,
+                                    dueDate: dueDate.toISOString()
+                                },
                                 timestamp: created.toISOString(),
                                 read: false
                             };
-                            notifications.unshift(notif);
-                            updateNotificationCount(1);
-                            showLocalNotification(notif.title, notif.body, notif.data);
-                            saveNotificationsToStorage();
+                            addNotification(notif);
                         }
                     }
                 });
             });
+        }
+
+        // === NOUVEAU : NOTIFICATIONS POUR LES COMMUNIQUÉS ===
+        const communiqueQuery = query(
+            collection(db, 'parent_communique_relations'),
+            where('parentId', '==', currentParent.matricule),
+            where('studentIds', 'array-contains', child.matricule),
+            orderBy('createdAt', 'desc'),
+            limit(10)
+        );
+        
+        onSnapshot(communiqueQuery, (snapshot) => {
+            snapshot.docChanges().forEach(async (change) => {
+                if (change.type === 'added') {
+                    const relation = change.doc.data();
+                    const created = relation.createdAt?.toDate() || new Date();
+                    
+                    // Récupérer les détails du communiqué
+                    const comDoc = await getDoc(doc(db, 'parent_communiques', relation.communiqueId));
+                    
+                    if (comDoc.exists()) {
+                        const communique = comDoc.data();
+                        const notifKey = `communique_${change.doc.id}_${child.matricule}`;
+                        
+                        if (!hasNotificationBeenSent(notifKey) && created > lastRead.communiques) {
+                            markNotificationAsSent(notifKey);
+                            
+                            const deadline = communique.deadline?.toDate() || new Date();
+                            const daysLeft = Math.ceil((deadline - new Date()) / (1000 * 60 * 60 * 24));
+                            
+                            const notif = {
+                                id: `communique_${change.doc.id}_${child.matricule}_${Date.now()}`,
+                                title: '📄 Nouveau communiqué',
+                                body: `${communique.feeType} - ${communique.amount} FCFA (échéance dans ${daysLeft} jour${daysLeft > 1 ? 's' : ''})`,
+                                type: 'communiques',
+                                data: { 
+                                    page: 'communiques', 
+                                    childId: child.matricule, 
+                                    childName: child.fullName,
+                                    communiqueId: relation.communiqueId,
+                                    feeType: communique.feeType,
+                                    amount: communique.amount,
+                                    deadline: deadline.toISOString()
+                                },
+                                timestamp: created.toISOString(),
+                                read: false
+                            };
+                            addNotification(notif);
+                        }
+                    }
+                }
+            });
         });
-    }
+
+        // === NOUVEAU : NOTIFICATIONS POUR LES PAIEMENTS ===
+        const paymentQuery = query(
+            collection(db, 'payment_requests'),
+            where('parentId', '==', currentParent.matricule),
+            where('studentId', '==', child.matricule),
+            orderBy('createdAt', 'desc'),
+            limit(10)
+        );
+        
+        onSnapshot(paymentQuery, (snapshot) => {
+            snapshot.docChanges().forEach(change => {
+                if (change.type === 'added') {
+                    const payment = change.doc.data();
+                    const created = payment.createdAt?.toDate() || new Date();
+                    
+                    const notifKey = `payment_${change.doc.id}_${child.matricule}`;
+                    if (!hasNotificationBeenSent(notifKey)) {
+                        markNotificationAsSent(notifKey);
+                        
+                        let statusText = '';
+                        let statusIcon = '';
+                        switch(payment.status) {
+                            case 'approved': 
+                                statusText = 'approuvé'; 
+                                statusIcon = '✅';
+                                break;
+                            case 'pending': 
+                                statusText = 'en attente'; 
+                                statusIcon = '⏳';
+                                break;
+                            case 'rejected': 
+                                statusText = 'rejeté'; 
+                                statusIcon = '❌';
+                                break;
+                            default: 
+                                statusText = payment.status; 
+                                statusIcon = '💰';
+                        }
+                        
+                        const notif = {
+                            id: `payment_${change.doc.id}_${child.matricule}_${Date.now()}`,
+                            title: `${statusIcon} Paiement ${statusText}`,
+                            body: `${child.fullName}: ${payment.month} - ${payment.amount} FCFA`,
+                            type: 'payments',
+                            data: { 
+                                page: 'payments', 
+                                childId: child.matricule, 
+                                childName: child.fullName,
+                                paymentId: change.doc.id,
+                                month: payment.month,
+                                amount: payment.amount,
+                                status: payment.status,
+                                paymentCode: payment.paymentCode
+                            },
+                            timestamp: created.toISOString(),
+                            read: false
+                        };
+                        addNotification(notif);
+                    }
+                }
+            });
+        });
+
+        // === NOUVEAU : NOTIFICATIONS POUR L'EMPLOI DU TEMPS ===
+        const timetableQuery = query(
+            collection(db, 'class_schedules'),
+            where('className', '==', child.class),
+            orderBy('publishedAt', 'desc'),
+            limit(5)
+        );
+        
+        onSnapshot(timetableQuery, (snapshot) => {
+            snapshot.docChanges().forEach(change => {
+                if (change.type === 'added') {
+                    const schedule = change.doc.data();
+                    const published = schedule.publishedAt?.toDate() || new Date();
+                    
+                    const notifKey = `timetable_${change.doc.id}_${child.matricule}`;
+                    if (!hasNotificationBeenSent(notifKey) && published > lastRead.timetable) {
+                        markNotificationAsSent(notifKey);
+                        
+                        const weekInfo = schedule.week ? `Semaine ${schedule.week}` : '';
+                        const monthInfo = schedule.month || '';
+                        
+                        const notif = {
+                            id: `timetable_${change.doc.id}_${child.matricule}_${Date.now()}`,
+                            title: '⏰ Nouvel emploi du temps',
+                            body: `${child.fullName}: ${weekInfo} ${monthInfo} publié`,
+                            type: 'timetable',
+                            data: { 
+                                page: 'timetable', 
+                                childId: child.matricule, 
+                                childName: child.fullName,
+                                scheduleId: change.doc.id,
+                                week: schedule.week,
+                                month: schedule.month
+                            },
+                            timestamp: published.toISOString(),
+                            read: false
+                        };
+                        addNotification(notif);
+                    }
+                }
+            });
+        });
+    });
+}
+
+// === FONCTIONS UTILITAIRES POUR LES NOTIFICATIONS ===
+const sentNotifications = new Set();
+
+function hasNotificationBeenSent(key) {
+    // Vérifier dans localStorage
+    const sent = JSON.parse(localStorage.getItem('sent_notifications') || '{}');
+    return !!sent[key];
+}
+
+function markNotificationAsSent(key) {
+    const sent = JSON.parse(localStorage.getItem('sent_notifications') || '{}');
+    sent[key] = Date.now();
+    // Nettoyer les anciennes entrées (plus de 7 jours)
+    const sevenDaysAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
+    Object.keys(sent).forEach(k => {
+        if (sent[k] < sevenDaysAgo) delete sent[k];
+    });
+    localStorage.setItem('sent_notifications', JSON.stringify(sent));
+}
+
+function addNotification(notif) {
+    // Ajouter au début du tableau
+    notifications.unshift(notif);
+    
+    // Limiter le nombre de notifications
+    if (notifications.length > 100) notifications = notifications.slice(0, 100);
+    
+    // Sauvegarder
+    saveNotificationsToStorage();
+    
+    // Mettre à jour le compteur
+    updateNotificationCount(1);
+    
+    // Afficher la notification en arrière-plan
+    showLocalNotification(notif.title, notif.body, notif.data);
+}
+
+function formatDate(dateStr) {
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('fr-FR', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric'
+    });
+}
 
     // ============================================
     // CONNEXION
