@@ -2263,6 +2263,8 @@
         return 'PAY' + Math.random().toString(36).substring(2, 8).toUpperCase();
     }
 
+
+
     // ============================================
     // SERVICE WORKER ET PWA
     // ============================================
@@ -2313,6 +2315,150 @@
             throw new Error(`Échec de l'upload: ${error.message}`);
         }
     }
+
+// ============================================
+// GESTIONNAIRE D'AUTHENTIFICATION (À AJOUTER)
+// ============================================
+onAuthStateChanged(auth, async (user) => {
+    if (user) {
+        console.log('✅ Utilisateur connecté:', user.uid);
+        
+        // L'utilisateur est connecté, trouver son document parent
+        try {
+            // Rechercher le parent par UID
+            const parentsQuery = query(
+                collection(db, 'parents'), 
+                where('uid', '==', user.uid)
+            );
+            const parentsSnap = await getDocs(parentsQuery);
+            
+            if (!parentsSnap.empty) {
+                const parentDoc = parentsSnap.docs[0];
+                currentParent = { 
+                    id: parentDoc.id,
+                    ...parentDoc.data() 
+                };
+                
+                console.log('✅ Données parent chargées:', currentParent.matricule);
+                
+                // Cacher l'écran de connexion
+                document.getElementById('login-overlay').classList.add('hidden');
+                document.getElementById('app-root').classList.remove('hidden');
+                
+                // Mettre à jour l'interface
+                document.getElementById('parent-name').textContent = currentParent.fullName;
+                
+                if (currentParent.photoURL) {
+                    document.getElementById('parent-photo-container').innerHTML = 
+                        `<img src="${currentParent.photoURL}" class="parent-photo" alt="Photo">`;
+                }
+                
+                // Charger les données
+                await loadParentData();
+                loadNotificationsFromStorage();
+                setupRealTimeNotifications();
+                
+                // Sauvegarder la session si "Se souvenir de moi" était coché
+                const rememberMe = document.getElementById('remember-me')?.checked;
+                if (rememberMe) {
+                    saveUserSession(currentParent);
+                }
+                
+                showToast('Connexion réussie', 'success');
+            } else {
+                console.error('❌ Aucun document parent trouvé pour cet utilisateur');
+                await signOut(auth);
+                showAlert('Compte parent non trouvé', 'error');
+            }
+        } catch (error) {
+            console.error('❌ Erreur chargement données parent:', error);
+            showAlert('Erreur de chargement', 'error');
+        }
+    } else {
+        console.log('👤 Utilisateur non connecté');
+        // Réinitialiser l'interface
+        document.getElementById('app-root').classList.add('hidden');
+        document.getElementById('login-overlay').classList.remove('hidden');
+        currentParent = null;
+        childrenList = [];
+        
+        // Vérifier s'il y a une session sauvegardée
+        checkExistingSession();
+    }
+});
+
+// ============================================
+// VERSION CORRIGÉE DU FORMULAIRE DE CONNEXION
+// ============================================
+document.getElementById('login-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    
+    const matricule = document.getElementById('login-matricule').value.trim();
+    const password = document.getElementById('login-password').value;
+    const rememberMe = document.getElementById('remember-me')?.checked || false;
+    
+    if (!matricule || !password) {
+        showAlert('Veuillez remplir tous les champs', 'error');
+        return;
+    }
+    
+    const btn = e.target.querySelector('button[type="submit"]');
+    const originalHTML = btn.innerHTML;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Connexion...';
+    btn.disabled = true;
+
+    try {
+        console.log('🔑 Tentative de connexion pour:', matricule);
+        
+        // 1. Récupérer d'abord le document parent
+        const parentDoc = await getDoc(doc(db, 'parents', matricule));
+        
+        if (!parentDoc.exists()) {
+            showAlert("Matricule parent incorrect", "error");
+            btn.innerHTML = originalHTML;
+            btn.disabled = false;
+            return;
+        }
+        
+        const parentData = parentDoc.data();
+        console.log('📄 Données parent trouvées:', parentData.email);
+        
+        // Vérifier que l'email d'authentification existe
+        if (!parentData.authEmail) {
+            console.error('❌ authEmail manquant dans le document parent');
+            showAlert("Compte parent non configuré correctement", "error");
+            btn.innerHTML = originalHTML;
+            btn.disabled = false;
+            return;
+        }
+        
+        // 2. Authentifier avec Firebase Auth
+        await signInWithEmailAndPassword(auth, parentData.authEmail, password);
+        
+        // 3. Le reste sera géré par onAuthStateChanged
+        console.log('✅ Authentification réussie, attente de onAuthStateChanged...');
+        
+        // Sauvegarder le matricule pour la session si "Se souvenir de moi"
+        if (rememberMe) {
+            localStorage.setItem('last_matricule', matricule);
+        }
+        
+    } catch (error) {
+        console.error('❌ Erreur détaillée:', error);
+        
+        // Messages d'erreur plus précis
+        if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password') {
+            showAlert("Matricule ou mot de passe incorrect", "error");
+        } else if (error.code === 'auth/too-many-requests') {
+            showAlert("Trop de tentatives, réessayez plus tard", "error");
+        } else {
+            showAlert("Erreur de connexion: " + error.message, "error");
+        }
+        
+        btn.innerHTML = originalHTML;
+        btn.disabled = false;
+    }
+});
 
     // ============================================
     // NOTIFICATIONS PUSH
