@@ -32,8 +32,8 @@ messaging.onBackgroundMessage((payload) => {
   const notificationTitle = payload.notification?.title || 'CS la Colombe';
   const notificationOptions = {
     body: payload.notification?.body || 'Nouvelle notification',
-    icon: payload.notification?.icon || 'icon-192x192.png',
-    badge: 'icon-72x72.png',
+    icon: payload.notification?.icon || '/icons/icon-192x192.png',
+    badge: '/icons/icon-72x72.png',
     image: payload.notification?.image,
     vibrate: [200, 100, 200],
     data: payload.data || {},
@@ -48,6 +48,93 @@ messaging.onBackgroundMessage((payload) => {
     timestamp: Date.now()
   };
   
+
+
+// ============================================
+// GESTION DES NOTIFICATIONS EN ARRIÈRE-PLAN (CORRIGÉ)
+// ============================================
+
+// Stockage des notifications déjà envoyées
+const sentNotifications = new Map();
+
+// Nettoyer les anciennes notifications toutes les heures
+setInterval(() => {
+    const oneHourAgo = Date.now() - (60 * 60 * 1000);
+    for (const [key, timestamp] of sentNotifications.entries()) {
+        if (timestamp < oneHourAgo) {
+            sentNotifications.delete(key);
+        }
+    }
+}, 60 * 60 * 1000);
+
+messaging.onBackgroundMessage((payload) => {
+    console.log('📨 [firebase-messaging-sw] Message en arrière-plan:', payload);
+    
+    // Créer une clé unique pour cette notification
+    const data = payload.data || {};
+    const notifKey = `${data.type || 'general'}_${data.id || Date.now()}`;
+    
+    // Vérifier si cette notification a déjà été envoyée récemment
+    const lastSent = sentNotifications.get(notifKey);
+    const oneHourAgo = Date.now() - (60 * 60 * 1000);
+    
+    if (lastSent && lastSent > oneHourAgo) {
+        console.log('⏭️ Notification déjà envoyée récemment, ignorée');
+        return;
+    }
+    
+    // Marquer comme envoyée
+    sentNotifications.set(notifKey, Date.now());
+    
+    const notificationTitle = payload.notification?.title || 'CS la Colombe';
+    const notificationOptions = {
+        body: payload.notification?.body || 'Nouvelle notification',
+        icon: payload.notification?.icon || '/icons/icon-192x192.png',
+        badge: '/icons/icon-72x72.png',
+        image: payload.notification?.image,
+        vibrate: [200, 100, 200],
+        data: { ...data, key: notifKey },
+        actions: [
+            { action: 'open', title: 'Ouvrir' },
+            { action: 'close', title: 'Fermer' }
+        ],
+        tag: notifKey, // Utiliser le tag pour éviter les doublons
+        renotify: false,
+        requireInteraction: true,
+        silent: false,
+        timestamp: Date.now()
+    };
+    
+    // Personnaliser selon le type
+    switch(data.type) {
+        case 'incident':
+            notificationOptions.title = `⚠️ ${notificationTitle}`;
+            break;
+        case 'presence':
+            notificationOptions.title = `📅 ${notificationTitle}`;
+            break;
+        case 'grade':
+        case 'cote':
+            notificationOptions.title = `📊 ${notificationTitle}`;
+            break;
+        case 'homework':
+            notificationOptions.title = `📚 ${notificationTitle}`;
+            break;
+        case 'payment':
+            notificationOptions.title = `💰 ${notificationTitle}`;
+            break;
+        case 'communique':
+            notificationOptions.title = `📄 ${notificationTitle}`;
+            break;
+        case 'timetable':
+            notificationOptions.title = `⏰ ${notificationTitle}`;
+            break;
+    }
+    
+    updateBadgeCount(1);
+    
+    return self.registration.showNotification(notificationTitle, notificationOptions);
+});
   // Personnaliser selon le type de notification
   const type = payload.data?.type;
   
