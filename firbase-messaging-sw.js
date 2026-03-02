@@ -32,8 +32,8 @@ messaging.onBackgroundMessage((payload) => {
   const notificationTitle = payload.notification?.title || 'CS la Colombe';
   const notificationOptions = {
     body: payload.notification?.body || 'Nouvelle notification',
-    icon: payload.notification?.icon || '/icons/icon-192x192.png',
-    badge: '/icons/icon-72x72.png',
+    icon: payload.notification?.icon || 'icon-192x192.png',
+    badge: 'icon-72x72.png',
     image: payload.notification?.image,
     vibrate: [200, 100, 200],
     data: payload.data || {},
